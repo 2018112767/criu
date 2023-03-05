@@ -1029,6 +1029,10 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 	int ret = 0;
 	struct list_head *vmas = &rsti(t)->vmas.h;
 	struct list_head *vma_io = &rsti(t)->vma_io;
+	struct page_read *prp;
+	PagemapEntry *pv;
+	//struct list_head *vmas;
+	//struct list_head *vma_io;
 
 	unsigned int nr_restored = 0;
 	unsigned int nr_shared = 0;
@@ -1037,6 +1041,9 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 	unsigned int nr_lazy = 0;
 	unsigned long va;
 
+
+	//vmas = &rsti(t)->vmas.h;
+	//vma_io = &rsti(t)->vma_io;
 	vma = list_first_entry(vmas, struct vma_area, list);
 	rsti(t)->pages_img_id = pr->pages_img_id;
 
@@ -1062,6 +1069,22 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 			pr->skip_pages(pr, nr_pages * PAGE_SIZE);
 			nr_lazy += nr_pages;
 			continue;
+		}
+		if(opts.lazy_pages && pagemap_in_parent(pr->pe)){
+			pv = pr->pe;
+			prp = pr;
+			while(pagemap_in_parent(pv)){
+				prp = prp -> parent;
+				prp->seek_pagemap(prp, pr->pe->vaddr);
+				pv = prp->pe;
+			}
+			//pr_debug("zhs lazy as pv:%lx va: %lx\n", pv->vaddr, va);
+			if(pagemap_lazy(pv)){
+				pr_debug("zhs skips %ld pages as pv:%lx at va: %lx\n", nr_pages,pv->vaddr, va);
+				pr->skip_pages(pr, nr_pages * PAGE_SIZE);
+				nr_lazy += nr_pages;
+				continue;
+			}
 		}
 
 		for (i = 0; i < nr_pages; i++) {

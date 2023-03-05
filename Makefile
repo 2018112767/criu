@@ -96,6 +96,8 @@ CFLAGS_PIE		+= -DCR_NOGLIBC
 export CFLAGS_PIE
 
 LDARCH ?= $(ARCH)
+LDFLAGS += -pthread
+LDFLAGS += -lpthread
 export LDARCH
 export PROTOUFIX DEFINES
 

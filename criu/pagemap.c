@@ -4,6 +4,16 @@
 #include <linux/falloc.h>
 #include <sys/uio.h>
 #include <limits.h>
+#include <string.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #include "types.h"
 #include "image.h"
@@ -391,6 +401,7 @@ static int maybe_read_page_local(struct page_read *pr, unsigned long vaddr, int 
 		ret = read_local_page(pr, vaddr, len, buf);
 		if (ret == 0 && pr->io_complete)
 			ret = pr->io_complete(pr, vaddr, nr);
+		//else ret = read_local_page(pr, vaddr, len, buf);
 	}
 
 	pr->pi_off += len;
@@ -530,17 +541,33 @@ static void advance_piov(struct page_read_iov *piov, ssize_t len)
 static int process_async_reads(struct page_read *pr)
 {
 	int fd, ret = 0;
+	//long long int j;
 	struct page_read_iov *piov, *n;
 
 	fd = img_raw_fd(pr->pi);
 	list_for_each_entry_safe(piov, n, &pr->async, l) {
-		ssize_t ret;
+		ssize_t ret=0;
+		//off_t sst=0;
 		struct iovec *iovs = piov->to;
+		//struct iovec mut_iov[10];
+		//struct iovec* cur;
 
 		pr_debug("Read piov iovs %d, from %ju, len %ju, first %p:%zu\n", piov->nr, piov->from,
 			 piov->end - piov->from, piov->to->iov_base, piov->to->iov_len);
 	more:
+		/*
+		cur = piov->to;
+		ret = 0;
+		sst = 0;
+		for(j=0;j<piov->nr;j++){
+			mmap(cur->iov_base, cur->iov_len, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, piov->from+sst);
+			sst = sst + cur->iov_len;
+			cur++;
+		}
+		*/
+		//ret = piov->end - piov->from;
 		ret = preadv(fd, piov->to, piov->nr, piov->from);
+		pr_debug("zhs read ret as %zu\n",ret );
 		if (fault_injected(FI_PARTIAL_PAGES)) {
 			/*
 			 * We might have read everything, but for debug
@@ -588,6 +615,217 @@ static int process_async_reads(struct page_read *pr)
 
 	return ret;
 }
+
+/*
+static int process_async_reads(struct page_read *pr)
+{
+	int fd= 0, ret=0;
+	struct page_read_iov *piov, *n;
+	char path[64];
+	char socket_path[64];
+	char fdpath[32];
+    size_t nt;
+	ssize_t bufsize;
+	int sockfd=0;
+	struct sockaddr_un addr;
+	bool socket_mode = false;
+	off_t max_length = 2147479552; // 2*1024*1024*1024-4096
+	//off_t file_size;
+	bufsize = sizeof(path);
+	fd = img_raw_fd(pr->pi);
+
+	pr_debug("zhs raw fd is %d\n",fd);
+
+	/
+	file_size = lseek(fd, 0, SEEK_END);
+	if(file_size<0){
+		pr_perror("LSEEK ERROR\n");
+		return -1;
+	}
+	*
+
+	//从fd获取page-X.img绝对路径
+	snprintf(fdpath, sizeof(fdpath), "/proc/self/fd/%d", fd);
+    nt = readlink(fdpath, path, bufsize);
+	path[nt]='\0';
+	strncpy(socket_path, path, nt-4);
+	socket_path[nt-3]='\0';
+	pr_debug("zhs path %s , socket_path %s\n",path, socket_path);
+	
+	if(access(socket_path, F_OK ) == -1 ){
+		pr_debug("NO UDS socket\n");
+		//fd = img_raw_fd(pr->pi);
+		//close(sockfd);
+		//unlink(socket_path);
+	}
+	else{
+		socket_mode = true;
+		pr_debug("use the UDS %d\n", fd);
+
+		//创建UDS嵌套字
+		sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
+		dup2(sockfd, 100+fd);
+		close(0);
+		if(sockfd == -1){
+			pr_perror("socket");
+			return -1;
+		}
+		sockfd = 100+fd;
+		memset(&addr, 0, sizeof(struct sockaddr_un));
+		addr.sun_family=AF_UNIX;
+		strncpy(addr.sun_path, socket_path, nt-4);
+		//setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &max_length, sizeof(max_length));
+		if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, &max_length, sizeof(max_length)) < 0) {
+   			perror("setsockopt error");
+    		exit(EXIT_FAILURE);
+		}
+		//连接到服务器端UDS
+		ret = connect(sockfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_un));
+		/
+		//创建内存映射区域
+		void *buf = mmap(NULL, file_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+		if(buf == MAP_FAILED){
+			pr_perror("MMAP ERROR\n");
+			return -1;
+		}
+		*
+	}
+
+	list_for_each_entry_safe(piov, n, &pr->async, l) {
+		ssize_t ret=0;
+		off_t start = piov->from;
+		struct iovec *iovs = piov->to;
+		struct iovec *cur = piov->to;
+		struct msghdr msg = {0};
+		char str_msg[32];
+		char len_msg[32];
+		int rc, i;
+		size_t length;
+		struct iovec *mut_iov;
+		pthread_t threads[16];
+		struct thread_data thread_data[16];
+
+		pr_debug("Read piov iovs %d, from %ju, len %ju, first %p:%zu\n", piov->nr, piov->from,
+			 piov->end - piov->from, piov->to->iov_base, piov->to->iov_len);		
+		memset(&msg, 0, sizeof(msg));
+		//msg.msg_iov = piov->to; // 将msg_iov指向定义的iovec数组
+		//msg.msg_iovlen = piov->nr;
+
+	more:
+
+		if(socket_mode){
+			//从文件中中读取
+			msg.msg_iov = piov->to; // 将msg_iov指向定义的iovec数组
+			msg.msg_iovlen = piov->nr;
+			cur = piov->to;
+			pr_debug("Now build the UDS\n");
+			sprintf(str_msg, "%jd,%x", (intmax_t)piov->from, piov->nr);
+			pr_debug("zhs offset as %ju, number as %x\n",piov->from, piov->nr);
+			// 偏移量和长度发给服务端
+			rc = send(sockfd, str_msg, 32, 0);
+        	if (rc == -1) {
+            	pr_err("sendmsg");
+            	return -1;
+        	}
+			for(i=1;i<=piov->nr;i++)
+			{
+				max_length = 1073741824;
+				length = cur->iov_len > max_length ? max_length : cur->iov_len;
+				sprintf(len_msg, "%zu", length);
+				// 每个数据块的长度发给服务端
+				rc = send(sockfd, len_msg, 32, 0);
+				if (rc == -1) {
+            		pr_err("send_len_msg");
+            		return -1;
+        		}
+				cur = piov->to+i;
+			}
+			//length = (piov->end - piov->from) > max_length ? max_length : (piov->end - piov->from);
+
+			ret = recvmsg(sockfd, &msg, 0);
+			//ret = preadv(sockfd, piov->to, piov->nr, piov->from);
+		}
+		else{
+			if(piov->nr==1){
+				i=0;
+				mut_iov = piov->to;
+				while(piov->to->iov_len>1073741824*i){
+					mut_iov->iov_base=i*1073741824+piov->to->iov_base;
+					mut_iov->iov_len = (piov->to->iov_len - 1073741824*i) > 1073741824 ? 1073741824 : (piov->to->iov_len - 1073741824*i);
+					thread_data[i].thread_id = i;
+        			thread_data[i].iovs = mut_iov;
+        			thread_data[i].fd = fd;
+					thread_data[i].from = piov->from + 1073741824*i;
+					pthread_create(&threads[i], NULL, preadv_thread, (void*)&thread_data[i]);
+					//ret = ret+thread_data[i].ret;
+					i++;
+					mut_iov++;
+				}
+				for (; i >=0; i--) {
+        			pthread_join(threads[i], NULL);
+					ret = ret+thread_data[i].ret;
+    			}
+			}
+			else ret = preadv(fd, piov->to, piov->nr, piov->from);
+		} 
+
+		pr_debug("zhs read ret as %zu\n",ret );
+		if (fault_injected(FI_PARTIAL_PAGES)) {
+			/
+			 * We might have read everything, but for debug
+			 * purposes let's try to force the advance_piov()
+			 * and re-read tail.
+			 *
+			if (ret > 0 && piov->nr >= 2) {
+				pr_debug("`- trim preadv %zu\n", ret);
+				ret /= 2;
+			}
+		}
+
+		if (ret != piov->end - piov->from) {
+			if (ret < 0) {
+				pr_err("Can't read async pr bytes (%zd / %ju read, %ju off, %d iovs)\n", ret,
+				       piov->end - piov->from, piov->from, piov->nr);
+				return -1;
+			}
+
+			/
+			 * The preadv() can return less than requested. It's
+			 * valid and doesn't mean error or EOF. We should advance
+			 * the iovecs and continue
+			 *
+			 * Modify the piov in-place, we're going to drop this one
+			 * anyway.
+			 *
+
+			advance_piov(piov, ret);
+			goto more;
+		}
+
+		if (opts.auto_dedup && punch_hole(pr, start, ret, false))
+			return -1;
+
+		BUG_ON(pr->io_complete); / FIXME -- implement once needed *
+
+		list_del(&piov->l);
+		xfree(iovs);
+		xfree(piov);
+		//xfree(msg);
+	}
+	if(socket_mode){
+		close(sockfd);
+		//unlink(socket_path);
+	}
+
+	if (pr->parent)
+		ret = process_async_reads(pr->parent);
+
+	return ret;
+}
+*/
+
+
+
 
 static void close_page_read(struct page_read *pr)
 {

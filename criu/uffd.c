@@ -182,7 +182,7 @@ static int prepare_sock_addr(struct sockaddr_un *saddr)
 	memset(saddr, 0, sizeof(struct sockaddr_un));
 
 	saddr->sun_family = AF_UNIX;
-	len = snprintf(saddr->sun_path, sizeof(saddr->sun_path), "%s", LAZY_PAGES_SOCK_NAME);
+	len = snprintf(saddr->sun_path, sizeof(saddr->sun_path), "%s/%s", opts.imgs_dir, LAZY_PAGES_SOCK_NAME);
 	if (len >= sizeof(saddr->sun_path)) {
 		pr_err("Wrong UNIX socket name: %s\n", LAZY_PAGES_SOCK_NAME);
 		return -1;

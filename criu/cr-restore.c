@@ -1715,6 +1715,13 @@ static int mount_proc(void)
 	return ret;
 }
 
+// Workaround for a combination of new kernel and old userspace
+pid_t getpid(void)
+{
+       return syscall(__NR_getpid);
+}
+
+
 /*
  * Tasks cannot change sid (session id) arbitrary, but can either
  * inherit one from ancestor, or create a new one with id equal to

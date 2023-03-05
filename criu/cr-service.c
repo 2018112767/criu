@@ -362,6 +362,7 @@ static int setup_opts_from_req(int sk, CriuOpts *req)
 		pr_perror("Can't readlink %s", images_dir_path);
 		goto err;
 	}
+	opts.imgs_dir=images_dir;
 
 	/* chdir to work dir */
 	if (work_changed_by_rpc_conf)
