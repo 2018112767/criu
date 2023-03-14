@@ -1332,6 +1332,8 @@ int epoll_run_rfds(int epollfd, struct epoll_event *evs, int nr_fds, int timeout
 {
 	int ret, i, nr_events;
 	bool have_a_break = false;
+	char fd_path[64], file_path[1024];
+	ssize_t len;
 
 	while (1) {
 		ret = epoll_wait(epollfd, evs, nr_fds, timeout);
@@ -1350,6 +1352,14 @@ int epoll_run_rfds(int epollfd, struct epoll_event *evs, int nr_fds, int timeout
 			events = evs[i].events;
 
 			if (events & EPOLLIN) {
+				snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", rfd->fd);
+   				len = readlink(fd_path, file_path, sizeof(file_path) - 1);
+    			if (len == -1) {
+        			pr_err("readlink");
+    			}
+    			file_path[len] = '\0';
+				pr_debug("zhs epoll fd path is %s\n", file_path);
+				
 				ret = rfd->read_event(rfd);
 				if (ret < 0)
 					goto out;

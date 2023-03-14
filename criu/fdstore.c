@@ -103,6 +103,8 @@ int fdstore_add(int fd)
 		return -1;
 	}
 
+	pr_debug("zhs send fd is %d\n", fd);
+
 	id = desc->next_id++;
 
 	mutex_unlock(&desc->lock);

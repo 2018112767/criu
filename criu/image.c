@@ -614,6 +614,7 @@ int open_parent(int dfd, int *pfd)
 	struct stat st;
 
 	*pfd = -1;
+	pr_debug("zhs: has parent directory\n");
 	/* Check if the parent symlink exists */
 	if (fstatat(dfd, CR_PARENT_LINK, &st, AT_SYMLINK_NOFOLLOW) && errno == ENOENT) {
 		pr_debug("No parent images directory provided\n");

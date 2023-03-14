@@ -671,21 +671,38 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 	struct page_read *pr = &lpi->pr;
 	struct lazy_iov *iov;
 	MmEntry *mm;
-	int nr_pages = 0, n_vma = 0, max_iov_len = 0;
+	int nr_pages = 0, n_vma = 0;
 	int ret = -1;
-	unsigned long start, end, len;
+	unsigned long start, end, len, max_iov_len = 0;
+	struct page_read *prp;
+	PagemapEntry *pv;
 
 	mm = init_mm_entry(lpi);
 	if (!mm)
 		return -1;
 
 	while (pr->advance(pr)) {
-		if (!pagemap_lazy(pr->pe))
-			continue;
+		
+		if(pagemap_in_parent(pr->pe)){
+			pv = pr->pe;
+			prp = pr;
+			while(pagemap_in_parent(pv)){
+				prp = prp -> parent;
+				prp->seek_pagemap(prp, pr->pe->vaddr);
+				pv = prp->pe;
+			}
+			if(!pagemap_lazy(pv)) 
+				continue;
+		}else{
+			if (!pagemap_lazy(pr->pe))
+				continue;
+		}
 
 		start = pr->pe->vaddr;
 		end = start + pr->pe->nr_pages * page_size();
 		nr_pages += pr->pe->nr_pages;
+
+		pr_debug("zhs collect iovs from 0x%lx to 0x%lx\n", start, end);
 
 		for (; n_vma < mm->n_vmas; n_vma++) {
 			VmaEntry *vma = mm->vmas[n_vma];
@@ -714,6 +731,7 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 	}
 
 	lpi->buf_size = max_iov_len;
+	pr_debug("zhs collect max iovs 0x%lx\n", max_iov_len);
 	if (posix_memalign(&lpi->buf, PAGE_SIZE, lpi->buf_size))
 		goto free_iovs;
 
@@ -724,7 +742,8 @@ free_iovs:
 	free_iovs(lpi);
 free_mm:
 	mm_entry__free_unpacked(mm, NULL);
-
+	pr_debug("zhs collect pages number %d\n", nr_pages);
+	pr_debug("zhs collect iovs over %d\n", ret);
 	return ret;
 }
 
@@ -735,6 +754,9 @@ static int ud_open(int client, struct lazy_pages_info **_lpi)
 	struct lazy_pages_info *lpi;
 	int ret = -1;
 	int pr_flags = PR_TASK;
+	char fd_path[64], file_path[1024];
+	ssize_t len;
+	//struct page_read *tpr;
 
 	lpi = lpi_init();
 	if (!lpi)
@@ -764,6 +786,14 @@ static int ud_open(int client, struct lazy_pages_info **_lpi)
 	}
 	pr_debug("Received PID: %d, uffd: %d\n", lpi->pid, lpi->lpfd.fd);
 
+	snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", lpi->lpfd.fd);
+    len = readlink(fd_path, file_path, sizeof(file_path) - 1);
+    if (len == -1) {
+        pr_err("readlink");
+    }
+    file_path[len] = '\0';
+	pr_debug("zhs lazy fd path is %s\n", file_path);
+
 	if (opts.use_page_server)
 		pr_flags |= PR_REMOTE;
 	ret = open_page_read(lpi->pid, &lpi->pr, pr_flags);
@@ -773,7 +803,6 @@ static int ud_open(int client, struct lazy_pages_info **_lpi)
 	}
 
 	lpi->pr.io_complete = uffd_io_complete;
-
 	/*
 	 * Find the memory pages belonging to the restored process
 	 * so that it is trackable when all pages have been transferred.
@@ -868,8 +897,9 @@ static int uffd_copy(struct lazy_pages_info *lpi, __u64 address, int *nr_pages)
 static int uffd_io_complete(struct page_read *pr, unsigned long img_addr, int nr)
 {
 	struct lazy_pages_info *lpi;
-	unsigned long addr = 0;
-	int req_pages, ret;
+	unsigned long addr = img_addr;
+	//int req_pages, ret;
+	int ret;
 	struct lazy_iov *req;
 
 	lpi = container_of(pr, struct lazy_pages_info, pr);
@@ -882,12 +912,17 @@ static int uffd_io_complete(struct page_read *pr, unsigned long img_addr, int nr
 	if (lpi->exited)
 		return 0;
 
+	pr_debug("zhs try to uffdio_copy\n");
+
+	/*
 	list_for_each_entry(req, &lpi->reqs, l) {
 		if (req->img_start == img_addr) {
 			addr = req->start;
 			break;
 		}
 	}
+	*zhs reference
+	*/
 
 	/* the request may be already gone because if unmap/remove */
 	if (!addr)
@@ -900,13 +935,17 @@ static int uffd_io_complete(struct page_read *pr, unsigned long img_addr, int nr
 	 * Make sure we are not trying to uffd_copy more memory than
 	 * we should.
 	 */
-	req_pages = (req->end - req->start) / PAGE_SIZE;
-	nr = min(nr, req_pages);
+
+	//req_pages = (req->end - req->start) / PAGE_SIZE; //zhs reference
+	//nr = min(nr, req_pages);
+	nr =1;
+
+	pr_debug("zhs prepare to uffdio_copy\n");
 
 	ret = uffd_copy(lpi, addr, &nr);
 	if (ret < 0)
 		return ret;
-
+	return 0;// zhs add
 	/* recheck if the process exited, it may be detected in uffd_copy */
 	if (lpi->exited)
 		return 0;
@@ -965,9 +1004,12 @@ static int uffd_handle_pages(struct lazy_pages_info *lpi, __u64 address, int nr,
 {
 	int ret;
 
+	//pr_debug("zhs prepare handle uffd %d\n", nr);
 	ret = uffd_seek_pages(lpi, address, nr);
 	if (ret)
 		return ret;
+
+	//pr_debug("zhs handle uffd %d\n", nr);
 
 	ret = lpi->pr.read_pages(&lpi->pr, address, nr, lpi->buf, flags);
 	if (ret <= 0) {
@@ -1262,6 +1304,7 @@ static int handle_requests(int epollfd, struct epoll_event **events, int nr_fds)
 
 		/* make sure we return success if there is nothing to xfer */
 		ret = 0;
+		//return ret; // zhs add
 
 		list_for_each_entry_safe(lpi, n, &lpis, l) {
 			if (!list_empty(&lpi->iovs) && list_empty(&lpi->reqs)) {
@@ -1277,9 +1320,13 @@ static int handle_requests(int epollfd, struct epoll_event **events, int nr_fds)
 				lpi_put(lpi);
 			}
 		}
+		pr_debug("zhs lazy loop over\n");
 
 		if (list_empty(&lpis))
 			break;
+
+		//zhs reference
+		
 	}
 
 out:
@@ -1392,8 +1439,9 @@ static int prepare_uffds(int listen, int epollfd)
 	lazy_sk_rfd.fd = client;
 	lazy_sk_rfd.read_event = lazy_sk_read_event;
 	lazy_sk_rfd.hangup_event = lazy_sk_hangup_event;
-	if (epoll_add_rfd(epollfd, &lazy_sk_rfd))
-		goto close_uffd;
+	//if (epoll_add_rfd(epollfd, &lazy_sk_rfd))
+	//  	goto close_uffd;
+	//     zhs reference
 
 	close(listen);
 	return 0;

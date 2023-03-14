@@ -241,6 +241,58 @@ static int read_parent_page(struct page_read *pr, unsigned long vaddr, int nr, v
 	return 0;
 }
 
+static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsigned long len, void *buf)
+{
+	int fd, i;
+	ssize_t ret;
+	//size_t curr = 0;
+	off_t img_off=0;
+	bool flags = false;
+	char fd_path[64], file_path[1024];
+	ssize_t lent;
+
+	fd = img_raw_fd(pr->pi);
+	if (fd < 0) {
+		pr_err("Failed getting raw image fd\n");
+		return -1;
+	}
+
+	pr_debug("zhs lazy read from 0x%lx, len 0x%lx\n", vaddr, len);
+	
+	for (i = 0; i < pr->nr_pmes; i++){
+		if((pr->pmes[i])->flags & PE_PARENT) continue;
+		if(vaddr <= (pr->pmes[i])->vaddr + (pr->pmes[i])->nr_pages * page_size()){
+			img_off = img_off + (vaddr - (pr->pmes[i])->vaddr);
+			flags = true;
+			break;
+		}
+		img_off = img_off + (pr->pmes[i])->nr_pages * page_size();
+	}
+
+	if(!flags){
+		pr_err("zhs can not find pe %lu\n", vaddr);
+		return -1;
+	}
+	pr_debug("zhs find the lazy-page off_t is 0x%lx\n", img_off);
+
+	snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
+    lent = readlink(fd_path, file_path, sizeof(file_path) - 1);
+    if (lent == -1) {
+        pr_err("readlink");
+    }
+    file_path[lent] = '\0';
+	pr_debug("zhs lazy image path is %s\n", file_path);
+
+	ret = pread(fd, buf, len, img_off);
+	if (ret < 1) {
+		pr_perror("Can't read mapping page %zd", ret);
+		return -1;
+	}
+	//pr_debug("zhs lazy read from 0x%lx, len 0x%lx\n", vaddr, len);
+
+	return 0;
+}
+
 static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned long len, void *buf)
 {
 	int fd;
@@ -252,6 +304,8 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned l
 		pr_err("Failed getting raw image fd\n");
 		return -1;
 	}
+
+	pr_debug("zhs read from 0x%lx, len 0x%lx\n", vaddr, len);
 	/*
 	 * Flush any pending async requests if any not to break the
 	 * linear reading from the pages.img file.
@@ -398,10 +452,16 @@ static int maybe_read_page_local(struct page_read *pr, unsigned long vaddr, int 
 	if ((flags & (PR_ASYNC | PR_ASAP)) == PR_ASYNC)
 		ret = pagemap_enqueue_iovec(pr, buf, len, &pr->async);
 	else {
-		ret = read_local_page(pr, vaddr, len, buf);
-		if (ret == 0 && pr->io_complete)
+		if(opts.lazy_pages){
+			ret = read_local_page_lazy(pr, vaddr, len, buf);
+		}
+		else ret = read_local_page(pr, vaddr, len, buf);
+		/*
+		if (ret == 0 && pr->io_complete){
 			ret = pr->io_complete(pr, vaddr, nr);
-		//else ret = read_local_page(pr, vaddr, len, buf);
+		}
+		zhs reference
+		*/	
 	}
 
 	pr->pi_off += len;
@@ -496,6 +556,9 @@ static int read_pagemap_page(struct page_read *pr, unsigned long vaddr, int nr, 
 	} else {
 		if (pr->maybe_read_page(pr, vaddr, nr, buf, flags) < 0)
 			return -1;
+	}
+	if(pr->io_complete){
+		pr->io_complete(pr, vaddr, nr);
 	}
 
 	pr->cvaddr += nr * PAGE_SIZE;
