@@ -802,7 +802,9 @@ int is_empty_dir(int dirfd)
 	DIR *fdir = NULL;
 	struct dirent *de;
 
+	pr_debug("DUMP ==> is_empty_dir, dirfd=%d\n", dirfd);
 	fdir = fdopendir(dirfd);
+	pr_debug("DUMP ==> fdopendir, !fdir=%d\n", !fdir);
 	if (!fdir) {
 		pr_perror("open directory stream by fd %d failed", dirfd);
 		close_safe(&dirfd);
@@ -810,6 +812,7 @@ int is_empty_dir(int dirfd)
 	}
 
 	while ((de = readdir(fdir))) {
+		pr_debug("DUMP ==> readdir, de->d_name=%s\n", de->d_name);
 		if (dir_dots(de))
 			continue;
 
@@ -819,6 +822,7 @@ int is_empty_dir(int dirfd)
 	ret = 1;
 out:
 	closedir(fdir);
+	pr_debug("DUMP ==> is_empty_dir, ret=%d\n", ret);
 	return ret;
 }
 
