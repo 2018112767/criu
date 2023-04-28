@@ -243,22 +243,27 @@ static int read_parent_page(struct page_read *pr, unsigned long vaddr, int nr, v
 
 static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsigned long len, void *buf)
 {
-	int fd, i;
+	int fd;
 	ssize_t ret;
 	//size_t curr = 0;
 	off_t img_off=0;
 	bool flags = false;
 	char fd_path[64], file_path[1024];
 	ssize_t lent;
-
+	int left = 0, right = pr->nr_pmes - 1, mid;
+	unsigned long start = vaddr & 0xffffffffffff0000UL;
+	unsigned long end = vaddr | 0xF000UL;
+	/*
 	fd = img_raw_fd(pr->pi);
 	if (fd < 0) {
 		pr_err("Failed getting raw image fd\n");
 		return -1;
 	}
+	*/
 
-	pr_debug("zhs lazy read from 0x%lx, len 0x%lx\n", vaddr, len);
+	pr_debug("zhs lazy read from 0x%lx, len 0x%lx, nr_pmes %d\n", vaddr, len, pr->nr_pmes);
 	
+	/*
 	for (i = 0; i < pr->nr_pmes; i++){
 		if((pr->pmes[i])->flags & PE_PARENT) continue;
 		if(vaddr <= (pr->pmes[i])->vaddr + (pr->pmes[i])->nr_pages * page_size()){
@@ -268,6 +273,26 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 		}
 		img_off = img_off + (pr->pmes[i])->nr_pages * page_size();
 	}
+	*/
+	mid = left + (right - left) / 2;
+	while (left <= right) {
+        mid = left + (right - left) / 2;
+        if (pr->pmes[mid]->vaddr > vaddr) {
+            right = mid - 1;
+        } else if (vaddr >= pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size()) {
+           left = mid + 1; 
+        } else {
+			fd = img_raw_fd(pr->zpi[mid]);
+			flags = true;
+            break;
+        }
+    }
+
+    start = (start > pr->pmes[mid]->vaddr) ? start : pr->pmes[mid]->vaddr;
+	end = (end < (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size())) ? end : (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size());
+
+	len = end - start;
+	img_off = pr->zp_off[mid] + (start - pr->pmes[mid]->vaddr);
 
 	if(!flags){
 		pr_err("zhs can not find pe %lu\n", vaddr);
@@ -574,6 +599,8 @@ static void free_pagemaps(struct page_read *pr)
 		pagemap_entry__free_unpacked(pr->pmes[i], NULL);
 
 	xfree(pr->pmes);
+	xfree(pr->zp_off);
+	xfree(pr->zpi);
 	pr->pmes = NULL;
 }
 
@@ -1018,6 +1045,9 @@ static int init_pagemaps(struct page_read *pr)
 	nr_realloc = nr_pmes / 2;
 
 	pr->pmes = xzalloc(nr_pmes * sizeof(*pr->pmes));
+	pr->zpi = xzalloc(nr_pmes * sizeof(*pr->pi));
+	pr->zp_off = xzalloc(nr_pmes * sizeof(pr->pi_off));
+
 	if (!pr->pmes)
 		return -1;
 
@@ -1092,6 +1122,8 @@ int open_page_read_at(int dfd, unsigned long img_id, struct page_read *pr, int p
 	pr->bunch.iov_len = 0;
 	pr->bunch.iov_base = NULL;
 	pr->pmes = NULL;
+	pr->zp_off = NULL;
+	pr->zpi = NULL;
 	pr->pieok = false;
 
 	pr->pmi = open_image_at(dfd, i_typ, O_RSTR, img_id);

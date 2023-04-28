@@ -1064,12 +1064,15 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 		 * This means that userfaultfd is used to load the pages
 		 * on demand.
 		 */
+
+		/*
 		if (opts.lazy_pages && pagemap_lazy(pr->pe)) {
 			pr_debug("Lazy restore skips %ld pages at %lx\n", nr_pages, va);
 			pr->skip_pages(pr, nr_pages * PAGE_SIZE);
 			nr_lazy += nr_pages;
 			continue;
 		}
+		*/
 		if(opts.lazy_pages && pagemap_in_parent(pr->pe)){
 			pv = pr->pe;
 			prp = pr;

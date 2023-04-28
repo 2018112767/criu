@@ -693,9 +693,12 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 			}
 			if(!pagemap_lazy(pv)) 
 				continue;
+			pr->zpi[pr->curr_pme] = prp->pi;// change the fd
+			pr->pe->flags = pr->pe->flags | PE_LAZY; 
 		}else{
-			if (!pagemap_lazy(pr->pe))
-				continue;
+			// if (!pagemap_lazy(pr->pe))
+			pr->pe->flags = PE_PRESENT;
+			continue;
 		}
 
 		start = pr->pe->vaddr;
@@ -976,6 +979,56 @@ static int uffd_zero(struct lazy_pages_info *lpi, __u64 address, int nr_pages)
 	return 0;
 }
 
+static void uffd_lazy_zpi(struct page_read *pr) // zhs add
+{
+	do {
+		int num = pr->nr_pmes;
+		bool fs;
+
+		if(num == 0){
+			pr->zp_off[num] = 0;
+		}
+		else{
+			fs = pagemap_in_parent(pr->pmes[num-1]);
+			if(fs){
+				pr->zp_off[num] = pr->zp_off[num-1];
+			}else{
+				pr->zp_off[num] = pr->zp_off[num-1] + pagemap_len(pr->pmes[num-1]);
+			}
+		}
+	} while (pr->advance(pr));
+
+	while(pr->parent){
+		uffd_lazy_zpi(pr->parent);
+	}
+}
+
+static void uffd_reflesh(struct page_read *pr) // zhs add
+{
+	struct page_read *prp;
+	PagemapEntry *pv;
+
+	while (pr->advance(pr)) {
+		
+		if(pagemap_in_parent(pr->pe)){
+			pv = pr->pe;
+			prp = pr;
+			while(pagemap_in_parent(pv)){
+				prp = prp -> parent;
+				prp->seek_pagemap(prp, pr->pe->vaddr);
+				pv = prp->pe;
+			}
+			if(!pagemap_lazy(pv)) 
+				continue;
+			pr->zp_off[pr->curr_pme] = prp->zp_off[prp->curr_pme];// change the fd_off
+			pr->pe->flags = PE_PRESENT | PE_LAZY; 
+		}else{
+			// if (!pagemap_lazy(pr->pe))
+			continue;
+		}
+	}
+}
+
 /*
  * Seek for the requested address in the pagemap. If it is found, the
  * subsequent call to pr->page_read will bring us the data. If the
@@ -987,9 +1040,19 @@ static int uffd_zero(struct lazy_pages_info *lpi, __u64 address, int nr_pages)
  */
 static int uffd_seek_pages(struct lazy_pages_info *lpi, __u64 address, int nr)
 {
-	int ret;
+	int ret = 0;
 
 	lpi->pr.reset(&lpi->pr);
+	
+	uffd_lazy_zpi(&lpi->pr);
+
+	lpi->pr.reset(&lpi->pr);
+
+	uffd_reflesh(&lpi->pr);
+
+	lpi->pr.reset(&lpi->pr);
+
+	return ret; //  zhs add
 
 	ret = lpi->pr.seek_pagemap(&lpi->pr, address);
 	if (!ret) {
@@ -1004,12 +1067,12 @@ static int uffd_handle_pages(struct lazy_pages_info *lpi, __u64 address, int nr,
 {
 	int ret;
 
-	//pr_debug("zhs prepare handle uffd %d\n", nr);
+	pr_debug("zhs prepare handle uffd %d\n", nr);
 	ret = uffd_seek_pages(lpi, address, nr);
 	if (ret)
 		return ret;
 
-	//pr_debug("zhs handle uffd %d\n", nr);
+	pr_debug("zhs handle uffd %d\n", nr);
 
 	ret = lpi->pr.read_pages(&lpi->pr, address, nr, lpi->buf, flags);
 	if (ret <= 0) {
@@ -1420,11 +1483,15 @@ static int prepare_uffds(int listen, int epollfd)
 
 	/* accept new client request */
 	len = sizeof(struct sockaddr_un);
+	pr_debug("zhs lazy fd is read\n");
+
 	if ((client = accept(listen, (struct sockaddr *)&saddr, &len)) < 0) {
 		pr_perror("server_accept error");
 		close(listen);
 		return -1;
 	}
+
+	pr_debug("zhs lazy socket has accepted\n");
 
 	for (i = 0; i < task_entries->nr_tasks; i++) {
 		struct lazy_pages_info *lpi = NULL;

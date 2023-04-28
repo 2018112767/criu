@@ -74,6 +74,9 @@ struct page_read {
 	unsigned long img_id; /* pagemap image file ID */
 
 	PagemapEntry **pmes;
+	struct cr_img **zpi;
+	off_t *zp_off;
+
 	int nr_pmes;
 	int curr_pme;
 
