@@ -247,12 +247,8 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 	ssize_t ret;
 	//size_t curr = 0;
 	off_t img_off=0;
-	bool flags = false;
 	char fd_path[64], file_path[1024];
 	ssize_t lent;
-	int left = 0, right = pr->nr_pmes - 1, mid;
-	unsigned long start = vaddr & 0xffffffffffff0000UL;
-	unsigned long end = vaddr | 0xF000UL;
 	/*
 	fd = img_raw_fd(pr->pi);
 	if (fd < 0) {
@@ -261,7 +257,7 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 	}
 	*/
 
-	pr_debug("zhs lazy read from 0x%lx, len 0x%lx, nr_pmes %d\n", vaddr, len, pr->nr_pmes);
+	pr_debug("zhs lazy read from 0x%lx, len 0x%lx, curr_pmes %d\n", vaddr, len, pr->curr_pme);
 	
 	/*
 	for (i = 0; i < pr->nr_pmes; i++){
@@ -274,30 +270,9 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 		img_off = img_off + (pr->pmes[i])->nr_pages * page_size();
 	}
 	*/
-	mid = left + (right - left) / 2;
-	while (left <= right) {
-        mid = left + (right - left) / 2;
-        if (pr->pmes[mid]->vaddr > vaddr) {
-            right = mid - 1;
-        } else if (vaddr >= pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size()) {
-           left = mid + 1; 
-        } else {
-			fd = img_raw_fd(pr->zpi[mid]);
-			flags = true;
-            break;
-        }
-    }
 
-    start = (start > pr->pmes[mid]->vaddr) ? start : pr->pmes[mid]->vaddr;
-	end = (end < (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size())) ? end : (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * page_size());
-
-	len = end - start;
-	img_off = pr->zp_off[mid] + (start - pr->pmes[mid]->vaddr);
-
-	if(!flags){
-		pr_err("zhs can not find pe %lu\n", vaddr);
-		return -1;
-	}
+    fd = img_raw_fd(pr->zpi[pr->curr_pme]);
+	img_off = pr->zp_off[pr->curr_pme] + (vaddr - pr->pmes[pr->curr_pme]->vaddr);
 	pr_debug("zhs find the lazy-page off_t is 0x%lx\n", img_off);
 
 	snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
@@ -468,25 +443,30 @@ static int maybe_read_page_local(struct page_read *pr, unsigned long vaddr, int 
 	int ret;
 	unsigned long len = nr * PAGE_SIZE;
 
+	pr_debug("zhs maybe %d, %d, nr_pme = %d\n", opts.lazy_pages, nr, pr->curr_pme);
+
 	/*
 	 * There's no API in the kernel to start asynchronous
 	 * cached read (or write), so in case someone is asking
 	 * for us for urgent async read, just do the regular
 	 * cached read.
 	 */
+	//pr_debug("zhs begin reading\n");
 	if ((flags & (PR_ASYNC | PR_ASAP)) == PR_ASYNC)
 		ret = pagemap_enqueue_iovec(pr, buf, len, &pr->async);
 	else {
 		if(opts.lazy_pages){
+			//pr_debug("zhs begin lazy_read\n");
+			// lazy_curr(pr, &vaddr, &nr);
+			// len = nr * PAGE_SIZE;
 			ret = read_local_page_lazy(pr, vaddr, len, buf);
+			//pr_debug("zhs finish lazy_read\n");
 		}
 		else ret = read_local_page(pr, vaddr, len, buf);
-		/*
+		
 		if (ret == 0 && pr->io_complete){
 			ret = pr->io_complete(pr, vaddr, nr);
 		}
-		zhs reference
-		*/	
 	}
 
 	pr->pi_off += len;
@@ -573,18 +553,22 @@ static int maybe_read_page_remote(struct page_read *pr, unsigned long vaddr, int
 static int read_pagemap_page(struct page_read *pr, unsigned long vaddr, int nr, void *buf, unsigned flags)
 {
 	pr_info("pr%lu-%u Read %lx %u pages\n", pr->img_id, pr->id, vaddr, nr);
-	pagemap_bound_check(pr->pe, vaddr, nr);
+	// pagemap_bound_check(pr->pe, vaddr, nr);
+	// pr_debug("zhs pagemap_read %d\n", pr->curr_pmes);
 
 	if (pagemap_in_parent(pr->pe)) {
 		if (read_parent_page(pr, vaddr, nr, buf, flags) < 0)
 			return -1;
 	} else {
+		//pr_debug("zhs maybe_read\n");
 		if (pr->maybe_read_page(pr, vaddr, nr, buf, flags) < 0)
 			return -1;
 	}
+	/*
 	if(pr->io_complete){
 		pr->io_complete(pr, vaddr, nr);
 	}
+	*/
 
 	pr->cvaddr += nr * PAGE_SIZE;
 

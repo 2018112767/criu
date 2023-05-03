@@ -408,6 +408,7 @@ static MmEntry *init_mm_entry(struct lazy_pages_info *lpi)
 	return mm;
 }
 
+
 static struct lazy_iov *find_iov(struct lazy_pages_info *lpi, unsigned long addr)
 {
 	struct lazy_iov *iov;
@@ -418,6 +419,8 @@ static struct lazy_iov *find_iov(struct lazy_pages_info *lpi, unsigned long addr
 
 	return NULL;
 }
+
+// zhs reference
 
 static int split_iov(struct lazy_iov *iov, unsigned long addr)
 {
@@ -658,6 +661,58 @@ static int remap_iovs(struct lazy_pages_info *lpi, unsigned long from, unsigned 
 	return 0;
 }
 
+static void uffd_lazy_zpi(struct page_read *pr) // zhs add
+{
+	while (pr->advance(pr)){
+		int num = pr->curr_pme;
+		bool fs;
+
+		if(num == 0){
+			pr->zp_off[num] = 0;
+		}
+		else{
+			fs = pagemap_in_parent(pr->pmes[num-1]);
+			if(fs){
+				pr->zp_off[num] = pr->zp_off[num-1];
+			}else{
+				pr->zp_off[num] = pr->zp_off[num-1] + pagemap_len(pr->pmes[num-1]);
+			}
+		}
+	}
+
+	// pr_debug("zhs finish uffd_lazy_zpi\n");
+
+	if(pr->parent){
+		uffd_lazy_zpi(pr->parent);
+	}
+}
+
+static void uffd_reflesh(struct page_read *pr) // zhs add
+{
+	struct page_read *prp;
+	PagemapEntry *pv;
+
+	while (pr->advance(pr)) {
+		
+		if(pagemap_in_parent(pr->pe)){
+			pv = pr->pe;
+			prp = pr;
+			while(pagemap_in_parent(pv)){
+				prp = prp -> parent;
+				prp->seek_pagemap(prp, pr->pe->vaddr);
+				pv = prp->pe;
+			}
+			if(!pagemap_lazy(pv)) 
+				continue;
+			pr->zp_off[pr->curr_pme] = prp->zp_off[prp->curr_pme] + pr->pe->vaddr - prp->pe->vaddr ;// change the fd_off
+			pr->pe->flags = PE_PRESENT | PE_LAZY; 
+		}else{
+			// if (!pagemap_lazy(pr->pe))
+			continue;
+		}
+	}
+}
+
 /*
  * Create a list of IOVs that can be handled using userfaultfd. The
  * IOVs generally correspond to lazy pagemap entries, except the cases
@@ -696,9 +751,12 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 			pr->zpi[pr->curr_pme] = prp->pi;// change the fd
 			pr->pe->flags = pr->pe->flags | PE_LAZY; 
 		}else{
-			// if (!pagemap_lazy(pr->pe))
-			pr->pe->flags = PE_PRESENT;
-			continue;
+		    if (!pagemap_lazy(pr->pe)){
+				continue;
+			}
+			pr->zpi[pr->curr_pme] = pr->pi;
+			// pr->pe->flags = PE_PRESENT;
+			
 		}
 
 		start = pr->pe->vaddr;
@@ -733,7 +791,19 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 		}
 	}
 
-	lpi->buf_size = max_iov_len;
+	lpi->pr.reset(&lpi->pr);
+	
+	uffd_lazy_zpi(&lpi->pr);
+
+	pr_debug("zhs finish uffd_lazy_zpi\n");
+
+	lpi->pr.reset(&lpi->pr);
+
+	uffd_reflesh(&lpi->pr);
+
+	pr_debug("zhs finish uffd_reflesh\n");
+
+	lpi->buf_size = 20 * PAGE_SIZE;
 	pr_debug("zhs collect max iovs 0x%lx\n", max_iov_len);
 	if (posix_memalign(&lpi->buf, PAGE_SIZE, lpi->buf_size))
 		goto free_iovs;
@@ -941,9 +1011,9 @@ static int uffd_io_complete(struct page_read *pr, unsigned long img_addr, int nr
 
 	//req_pages = (req->end - req->start) / PAGE_SIZE; //zhs reference
 	//nr = min(nr, req_pages);
-	nr =1;
+	// nr =1;
 
-	pr_debug("zhs prepare to uffdio_copy\n");
+	// pr_debug("zhs prepare to uffdio_copy\n");
 
 	ret = uffd_copy(lpi, addr, &nr);
 	if (ret < 0)
@@ -979,55 +1049,6 @@ static int uffd_zero(struct lazy_pages_info *lpi, __u64 address, int nr_pages)
 	return 0;
 }
 
-static void uffd_lazy_zpi(struct page_read *pr) // zhs add
-{
-	do {
-		int num = pr->nr_pmes;
-		bool fs;
-
-		if(num == 0){
-			pr->zp_off[num] = 0;
-		}
-		else{
-			fs = pagemap_in_parent(pr->pmes[num-1]);
-			if(fs){
-				pr->zp_off[num] = pr->zp_off[num-1];
-			}else{
-				pr->zp_off[num] = pr->zp_off[num-1] + pagemap_len(pr->pmes[num-1]);
-			}
-		}
-	} while (pr->advance(pr));
-
-	while(pr->parent){
-		uffd_lazy_zpi(pr->parent);
-	}
-}
-
-static void uffd_reflesh(struct page_read *pr) // zhs add
-{
-	struct page_read *prp;
-	PagemapEntry *pv;
-
-	while (pr->advance(pr)) {
-		
-		if(pagemap_in_parent(pr->pe)){
-			pv = pr->pe;
-			prp = pr;
-			while(pagemap_in_parent(pv)){
-				prp = prp -> parent;
-				prp->seek_pagemap(prp, pr->pe->vaddr);
-				pv = prp->pe;
-			}
-			if(!pagemap_lazy(pv)) 
-				continue;
-			pr->zp_off[pr->curr_pme] = prp->zp_off[prp->curr_pme];// change the fd_off
-			pr->pe->flags = PE_PRESENT | PE_LAZY; 
-		}else{
-			// if (!pagemap_lazy(pr->pe))
-			continue;
-		}
-	}
-}
 
 /*
  * Seek for the requested address in the pagemap. If it is found, the
@@ -1042,15 +1063,15 @@ static int uffd_seek_pages(struct lazy_pages_info *lpi, __u64 address, int nr)
 {
 	int ret = 0;
 
-	lpi->pr.reset(&lpi->pr);
+	// lpi->pr.reset(&lpi->pr);
 	
-	uffd_lazy_zpi(&lpi->pr);
+	// uffd_lazy_zpi(&lpi->pr);
 
-	lpi->pr.reset(&lpi->pr);
+	// lpi->pr.reset(&lpi->pr);
 
-	uffd_reflesh(&lpi->pr);
+	// uffd_reflesh(&lpi->pr);
 
-	lpi->pr.reset(&lpi->pr);
+	// lpi->pr.reset(&lpi->pr);
 
 	return ret; //  zhs add
 
@@ -1067,12 +1088,12 @@ static int uffd_handle_pages(struct lazy_pages_info *lpi, __u64 address, int nr,
 {
 	int ret;
 
-	pr_debug("zhs prepare handle uffd %d\n", nr);
+	// pr_debug("zhs prepare handle uffd %d\n", nr);
 	ret = uffd_seek_pages(lpi, address, nr);
 	if (ret)
 		return ret;
 
-	pr_debug("zhs handle uffd %d\n", nr);
+	// pr_debug("zhs handle uffd %d\n", (&lpi->pr)->curr_pme);
 
 	ret = lpi->pr.read_pages(&lpi->pr, address, nr, lpi->buf, flags);
 	if (ret <= 0) {
@@ -1253,24 +1274,72 @@ static bool is_page_queued(struct lazy_pages_info *lpi, unsigned long addr)
 	return false;
 }
 
+// zhs dd
+static bool lazy_curr(struct page_read *pr, unsigned long long *vaddr, int *nr)
+{
+	unsigned long addr = *vaddr;
+	unsigned long start = addr & 0xffffffffffff0000UL;
+	unsigned long end = addr | 0xffff;
+	unsigned long len = 0; 
+	int left = 0, right = pr->nr_pmes - 1, mid;
+
+	end++;
+	mid = left + (right - left) / 2;
+	while (left <= right) {
+        mid = left + (right - left) / 2;
+        if (pr->pmes[mid]->vaddr > addr) {
+            right = mid - 1;
+        } else if (addr >= pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * PAGE_SIZE) {
+           left = mid + 1; 
+        } else {
+			pr->curr_pme = mid;
+			pr->pe = pr->pmes[mid];
+            break;
+        }
+    }
+	if(left>right){
+		return false;
+	}
+	pr_debug("zhs lazy_curr mid pr number %d from address 0x%lx to end 0x%lx\n", pr->pmes[mid]->nr_pages , pr->pmes[mid]->vaddr, end);
+
+	start = (start > pr->pmes[mid]->vaddr) ? start : pr->pmes[mid]->vaddr;
+	end = (end < (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * PAGE_SIZE)) ? end : (pr->pmes[mid]->vaddr + pr->pmes[mid]->nr_pages * PAGE_SIZE);
+
+	pr_debug("zhs lazy_curr addr 0x%lx from 0x%lx to 0x%lx\n",addr, start, end);
+	len = end - start;
+	*nr = len/PAGE_SIZE;
+	*vaddr = start;
+	return true;
+}
+
 static int handle_page_fault(struct lazy_pages_info *lpi, struct uffd_msg *msg)
 {
 	struct lazy_iov *iov;
 	__u64 address;
-	int ret;
+	int ret, nr =1;
+	bool flags;
 
 	/* Align requested address to the next page boundary */
 	address = msg->arg.pagefault.address & ~(page_size() - 1);
 	lp_debug(lpi, "#PF at 0x%llx\n", address);
 
+	flags = lazy_curr(&lpi->pr, &address, &nr);
+
+	if(!flags){
+		return uffd_zero(lpi, address, nr);
+	}
+
 	if (is_page_queued(lpi, address))
 		return 0;
+	// zhs reference
 
 	iov = find_iov(lpi, address);
 	if (!iov)
-		return uffd_zero(lpi, address, 1);
+		return uffd_zero(lpi, address, nr);
 
-	iov = extract_range(iov, address, address + PAGE_SIZE);
+	// pr_debug("zhs begin handle page_fault\n");
+
+	iov = extract_range(iov, address, address + nr * PAGE_SIZE);
 	if (!iov)
 		return -1;
 
@@ -1278,7 +1347,9 @@ static int handle_page_fault(struct lazy_pages_info *lpi, struct uffd_msg *msg)
 
 	update_xfer_len(lpi, true);
 
-	ret = uffd_handle_pages(lpi, iov->img_start, 1, PR_ASYNC | PR_ASAP);
+	// pr_debug("zhs handle page_fault %d\n", lpi->pr.nr_pmes);
+
+	ret = uffd_handle_pages(lpi, iov->img_start, nr, PR_ASYNC | PR_ASAP);
 	if (ret < 0) {
 		lp_err(lpi, "Error during regular page copy\n");
 		return -1;
@@ -1350,6 +1421,8 @@ static int handle_requests(int epollfd, struct epoll_event **events, int nr_fds)
 	struct lazy_pages_info *lpi, *n;
 	int poll_timeout = -1;
 	int ret;
+
+	// opts.lazy_pages = true;
 
 	for (;;) {
 		ret = epoll_run_rfds(epollfd, *events, nr_fds, poll_timeout);
