@@ -257,7 +257,7 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 	}
 	*/
 
-	pr_debug("zhs lazy read from 0x%lx, len 0x%lx, curr_pmes %d\n", vaddr, len, pr->curr_pme);
+	// pr_debug("zhs lazy read from 0x%lx, len 0x%lx, curr_pmes %d\n", vaddr, len, pr->curr_pme);
 	
 	/*
 	for (i = 0; i < pr->nr_pmes; i++){
@@ -273,7 +273,7 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 
     fd = img_raw_fd(pr->zpi[pr->curr_pme]);
 	img_off = pr->zp_off[pr->curr_pme] + (vaddr - pr->pmes[pr->curr_pme]->vaddr);
-	pr_debug("zhs find the lazy-page off_t is 0x%lx\n", img_off);
+	// pr_debug("zhs find the lazy-page off_t is 0x%lx\n", img_off);
 
 	snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
     lent = readlink(fd_path, file_path, sizeof(file_path) - 1);
@@ -288,7 +288,7 @@ static int read_local_page_lazy(struct page_read *pr, unsigned long vaddr, unsig
 		pr_perror("Can't read mapping page %zd", ret);
 		return -1;
 	}
-	//pr_debug("zhs lazy read from 0x%lx, len 0x%lx\n", vaddr, len);
+	pr_debug("zhs lazy read from 0x%lx, len 0x%lx\n", vaddr, len);
 
 	return 0;
 }
@@ -1028,9 +1028,9 @@ static int init_pagemaps(struct page_read *pr)
 	nr_pmes = fsize / PAGEMAP_ENTRY_SIZE_ESTIMATE + 1;
 	nr_realloc = nr_pmes / 2;
 
+	pr_debug("zhs prepare before pagemap pme number is %d\n", nr_pmes);
+
 	pr->pmes = xzalloc(nr_pmes * sizeof(*pr->pmes));
-	pr->zpi = xzalloc(nr_pmes * sizeof(*pr->pi));
-	pr->zp_off = xzalloc(nr_pmes * sizeof(pr->pi_off));
 
 	if (!pr->pmes)
 		return -1;
@@ -1057,6 +1057,11 @@ static int init_pagemaps(struct page_read *pr)
 			pr->pmes = new;
 		}
 	}
+
+	pr->zpi = xzalloc(nr_pmes * sizeof(*pr->pi));
+	pr->zp_off = xzalloc(nr_pmes * sizeof(off_t));
+
+	pr_debug("zhs prepare after pagemap pme number is %d\n", nr_pmes);
 
 	close_image(pr->pmi);
 	pr->pmi = NULL;
