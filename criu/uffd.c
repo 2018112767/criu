@@ -756,11 +756,13 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 			pr->zpi[pr->curr_pme] = prp->pi;// change the fd
 			pr->pe->flags = pr->pe->flags | PE_LAZY; 
 		}else{
+			/*
 		    if (!pagemap_lazy(pr->pe)){
 				continue;
 			}
+			*/
 			pr->zpi[pr->curr_pme] = pr->pi;
-			// pr->pe->flags = PE_PRESENT;
+			pr->pe->flags = PE_PRESENT;
 			
 		}
 
