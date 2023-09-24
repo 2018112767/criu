@@ -157,6 +157,21 @@ static inline int send_psi(int sk, struct page_server_iov *pi)
 	return send_psi_flags(sk, pi, 0);
 }
 
+void zhs_dump_debug(char msg[])
+{
+	FILE *logFile = fopen("/home/zhs/Desktop/zhs.log", "a");
+	// 将字符串写入日志文件
+    if (fputs(msg, logFile) == EOF) {
+        perror("写入日志文件时出错");
+        fclose(logFile);
+        return;
+    }
+
+    // 关闭日志文件
+    fclose(logFile);
+	return;
+}
+
 /* page-server xfer */
 static int write_pages_to_server(struct page_xfer *xfer, int p, unsigned long len)
 {
@@ -312,7 +327,7 @@ static int write_pagemap_loc(struct page_xfer *xfer, struct iovec *iov, u32 flag
 	pe.has_flags = true;
 	pe.flags = flags;
 
-	if (flags & PE_PRESENT) {
+	if((flags & PE_PRESENT) && !(flags & PE_PARENT)) {
 		if (opts.auto_dedup && xfer->parent != NULL) {
 			ret = dedup_one_iovec(xfer->parent, pe.vaddr, pagemap_len(&pe));
 			if (ret == -1) {
@@ -320,7 +335,7 @@ static int write_pagemap_loc(struct page_xfer *xfer, struct iovec *iov, u32 flag
 				return ret;
 			}
 		}
-	} else if (flags & PE_PARENT) {
+	}else if (flags & PE_PARENT) {
 		if (xfer->parent != NULL) {
 			ret = check_pagehole_in_parent(xfer->parent, iov);
 			if (ret) {
@@ -332,6 +347,8 @@ static int write_pagemap_loc(struct page_xfer *xfer, struct iovec *iov, u32 flag
 
 	if (pb_write_one(xfer->pmi, &pe, PB_PAGEMAP) < 0)
 		return -1;
+
+	zhs_dump_debug("write pagemap loc over\n");
 
 	return 0;
 }
@@ -440,6 +457,10 @@ static int get_hole_flags(struct page_pipe *pp, int n)
 
 	if (hole_flags == PP_HOLE_PARENT)
 		return PE_PARENT;
+
+	else if(hole_flags == (ZHS_HOLE_PARENT | PP_HOLE_PARENT))
+		return 	PE_PARENT | PE_PRESENT;
+
 	else
 		BUG();
 
@@ -820,6 +841,8 @@ int page_xfer_predump_pages(int pid, struct page_xfer *xfer, struct page_pipe *p
 			goto err;
 		}
 
+		zhs_dump_debug("zhs begin TIME_MEMWRITE");
+
 		timing_stop(TIME_MEMDUMP);
 		timing_start(TIME_MEMWRITE);
 
@@ -851,6 +874,7 @@ int page_xfer_predump_pages(int pid, struct page_xfer *xfer, struct page_pipe *p
 	munmap(userbuf, userbuf_len);
 	xfree(aux_iov);
 	timing_start(TIME_MEMWRITE);
+	zhs_dump_debug("zhs finish TIME_MEMWRITE");
 
 	return dump_holes(xfer, pp, &cur_hole, NULL);
 err:
@@ -1066,6 +1090,8 @@ static int page_server_add(int sk, struct page_server_iov *pi, u32 flags)
 
 	if (!(flags & PE_PRESENT))
 		return 0;
+
+	if(flags & PE_PARENT) return 0;
 
 	len = iov.iov_len;
 	while (len > 0) {

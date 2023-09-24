@@ -700,6 +700,11 @@ static void uffd_reflesh(struct page_read *pr) // zhs add
 			pv = pr->pe;
 			prp = pr;
 			while(pagemap_in_parent(pv)){
+				if(zhs_pagemap_present(pv))
+				{
+					pr->pe->flags = PE_PRESENT;
+					break;
+				}
 				prp = prp -> parent;
 				prp->seek_pagemap(prp, pr->pe->vaddr);
 				pv = prp->pe;
@@ -746,6 +751,7 @@ static int collect_iovs(struct lazy_pages_info *lpi)
 			pv = pr->pe;
 			prp = pr;
 			while(pagemap_in_parent(pv)){
+				if(zhs_pagemap_present(pv)) break;
 				prp = prp -> parent;
 				prp->seek_pagemap(prp, pr->pe->vaddr);
 				pv = prp->pe;

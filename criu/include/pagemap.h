@@ -144,6 +144,11 @@ static inline bool pagemap_lazy(PagemapEntry *pe)
 
 static inline bool pagemap_present(PagemapEntry *pe)
 {
+	return ((!!(pe->flags & PE_PRESENT)) && (!(pe->flags & PE_PARENT)));
+}
+
+static inline bool zhs_pagemap_present(PagemapEntry *pe)
+{
 	return !!(pe->flags & PE_PRESENT);
 }
 

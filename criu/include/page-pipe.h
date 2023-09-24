@@ -112,6 +112,8 @@ struct page_pipe_buf {
 
 #define PP_HOLE_PARENT (1 << 0)
 
+#define ZHS_HOLE_PARENT (1 << 4)
+
 struct page_pipe {
 	unsigned int nr_pipes;			   /* how many page_pipe_bufs in there */
 	struct list_head bufs;			   /* list of bufs */

@@ -49,10 +49,48 @@ static int task_reset_dirty_track(int pid)
 	return ret;
 }
 
+void zhs_dd_debug(char msg[])
+{
+	FILE *logFile = fopen("/home/zhs/Desktop/zhs.log", "a");
+	// 将字符串写入日志文件
+    if (fputs(msg, logFile) == EOF) {
+        perror("写入日志文件时出错");
+        fclose(logFile);
+        return;
+    }
+
+    // 关闭日志文件
+    fclose(logFile);
+	return;
+}
+
 int do_task_reset_dirty_track(int pid)
 {
 	int fd, ret;
+	char cmd_access[] = "1";
 	char cmd[] = "4";
+
+	pr_info("Reset %d's access tracking\n", pid);
+
+    // Clear ACCESS bit
+    fd = __open_proc(pid, EACCES, O_RDWR, "clear_refs");
+    if (fd < 0)
+        return errno == EACCES ? 1 : -1;
+
+    ret = write(fd, cmd_access, sizeof(cmd_access));
+    if (ret < 0) {
+        if (errno == EINVAL) /* No clear-soft-dirty in kernel */
+            ret = 1;
+        else {
+            pr_perror("Can't reset %d's ACCESS bit", pid);
+            ret = -1;
+        }
+    } else {
+        pr_info(" ... ACCESS bit cleared\n");
+        ret = 0;
+    }
+
+    close(fd);
 
 	pr_info("Reset %d's dirty tracking\n", pid);
 
@@ -97,6 +135,11 @@ static inline bool __page_in_parent(bool dirty)
 	 */
 
 	return opts.track_mem && opts.img_parent && !dirty;
+}
+
+static inline bool zhs_cannot_lazy(bool access)
+{
+	return opts.img_parent && access;
 }
 
 bool should_dump_page(VmaEntry *vmae, u64 pme)
@@ -178,11 +221,14 @@ static int generate_iovs(struct pstree_item *item, struct vma_area *vma, struct 
 		unsigned long vaddr;
 		unsigned int ppb_flags = 0;
 		int st;
+		bool zhf;
 
 		if (!should_dump_page(vma->e, at[pfn]))
 			continue;
 
 		vaddr = vma->e->start + *off + pfn * PAGE_SIZE;
+
+		zhf = zhs_cannot_lazy((at[pfn] & PME_ACCESSED));
 
 		if (vma_entry_can_be_lazy(vma->e) && !is_stack(item, vaddr))
 			ppb_flags |= PPB_LAZY;
@@ -195,7 +241,14 @@ static int generate_iovs(struct pstree_item *item, struct vma_area *vma, struct 
 		 */
 
 		if (has_parent && page_in_parent(at[pfn] & PME_SOFT_DIRTY)) {
-			ret = page_pipe_add_hole(pp, vaddr, PP_HOLE_PARENT);
+
+			if(!zhf){
+				ret = page_pipe_add_hole(pp, vaddr, PP_HOLE_PARENT);
+			}
+			else{
+				ret = page_pipe_add_hole(pp, vaddr, PP_HOLE_PARENT | ZHS_HOLE_PARENT);
+				pr_debug("zhs prevent lazy restore 0x%lx\n", vaddr);
+			}
 			st = 0;
 		} else {
 			ret = page_pipe_add_page(pp, vaddr, ppb_flags);
@@ -432,7 +485,6 @@ again:
 	ret = generate_iovs(item, vma, pp, map, &off, has_parent);
 	if (ret == -EAGAIN) {
 		BUG_ON(!(pp->flags & PP_CHUNK_MODE));
-
 		ret = drain_pages(pp, ctl, args);
 		if (!ret)
 			ret = xfer_pages(pp, xfer);
@@ -557,6 +609,7 @@ static int __parasite_dump_pages_seized(struct pstree_item *item, struct parasit
 	if (ret)
 		goto out_xfer;
 	exit_code = 0;
+	zhs_dd_debug("all things are good\n");
 out_xfer:
 	if (!mdc->pre_dump)
 		xfer.close(&xfer);
@@ -1080,6 +1133,7 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 			pv = pr->pe;
 			prp = pr;
 			while(pagemap_in_parent(pv)){
+				if(zhs_pagemap_present(pv)) break;
 				prp = prp -> parent;
 				prp->seek_pagemap(prp, pr->pe->vaddr);
 				pv = prp->pe;
